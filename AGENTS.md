@@ -15,7 +15,7 @@ Labrat turns your AI agent into an autonomous ML researcher. Given a research go
 ## Prerequisites
 
 - Python 3.12+
-- [Modal](https://modal.com) CLI installed and authenticated (`pip install modal && modal setup`)
+- [Modal](https://modal.com) CLI installed and authenticated (`uv tool install modal && modal setup`)
 - A Modal account with GPU access
 
 ## Quick start

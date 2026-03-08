@@ -57,7 +57,7 @@ Copy the `labrat/` directory to wherever your tool discovers skills. The format 
 ## Prerequisites
 
 - Python 3.12+
-- [Modal](https://modal.com) CLI (`pip install modal && modal setup`)
+- [Modal](https://modal.com) CLI (`uv tool install modal && modal setup`)
 - Modal account with GPU access
 
 ## Usage
