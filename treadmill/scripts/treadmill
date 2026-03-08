@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TREADMILL_DIR="${TREADMILL_DIR:-.treadmill}"
+PID_FILE="$TREADMILL_DIR/pid"
+LOG_FILE="$TREADMILL_DIR/log"
+
+usage() {
+  cat <<'USAGE'
+treadmill - run a command on a recurring interval
+
+Usage:
+  treadmill start <interval> <command...>   Start running command every <interval>
+  treadmill stop                            Stop the running treadmill
+  treadmill status                          Check if a treadmill is running
+  treadmill log [N]                         Show last N lines of log (default: 30)
+
+Interval format:
+  30s, 5m, 1h, or plain seconds (e.g. 300)
+
+Examples:
+  treadmill start 5m modal run modal_app.py
+  treadmill start 10m python check_status.py
+  treadmill stop
+USAGE
+  exit 1
+}
+
+parse_interval() {
+  local input="$1"
+  case "$input" in
+    *s) echo "${input%s}" ;;
+    *m) echo $(( ${input%m} * 60 )) ;;
+    *h) echo $(( ${input%h} * 3600 )) ;;
+    *)  echo "$input" ;;
+  esac
+}
+
+cmd_start() {
+  local interval_raw="$1"; shift
+  local cmd=("$@")
+  local interval
+  interval=$(parse_interval "$interval_raw")
+
+  if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "Treadmill already running (PID $(cat "$PID_FILE")). Stop it first."
+    exit 1
+  fi
+
+  mkdir -p "$TREADMILL_DIR"
+
+  echo "Starting treadmill: every ${interval_raw} (${interval}s), running: ${cmd[*]}"
+
+  (
+    while true; do
+      echo "--- $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$LOG_FILE"
+      "${cmd[@]}" >> "$LOG_FILE" 2>&1 || true
+      echo "" >> "$LOG_FILE"
+      sleep "$interval"
+    done
+  ) &
+
+  local pid=$!
+  echo "$pid" > "$PID_FILE"
+
+  cat > "$TREADMILL_DIR/config" <<CFG
+interval=$interval_raw
+command=${cmd[*]}
+started=$(date '+%Y-%m-%d %H:%M:%S')
+pid=$pid
+CFG
+
+  echo "Treadmill started (PID $pid). Logs: $LOG_FILE"
+  echo "Stop with: treadmill stop"
+}
+
+cmd_stop() {
+  if [[ ! -f "$PID_FILE" ]]; then
+    echo "No treadmill running."
+    exit 0
+  fi
+
+  local pid
+  pid=$(cat "$PID_FILE")
+
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    # also kill children (the sleep process)
+    pkill -P "$pid" 2>/dev/null || true
+    echo "Treadmill stopped (PID $pid)."
+  else
+    echo "Treadmill was not running (stale PID $pid)."
+  fi
+
+  rm -f "$PID_FILE"
+}
+
+cmd_status() {
+  if [[ ! -f "$PID_FILE" ]]; then
+    echo "No treadmill running."
+    exit 0
+  fi
+
+  local pid
+  pid=$(cat "$PID_FILE")
+
+  if kill -0 "$pid" 2>/dev/null; then
+    if [[ -f "$TREADMILL_DIR/config" ]]; then
+      echo "Treadmill running (PID $pid):"
+      cat "$TREADMILL_DIR/config"
+    else
+      echo "Treadmill running (PID $pid)."
+    fi
+  else
+    echo "Treadmill not running (stale PID $pid)."
+    rm -f "$PID_FILE"
+  fi
+}
+
+cmd_log() {
+  local lines="${1:-30}"
+  if [[ -f "$LOG_FILE" ]]; then
+    tail -n "$lines" "$LOG_FILE"
+  else
+    echo "No log file yet."
+  fi
+}
+
+[[ $# -lt 1 ]] && usage
+
+case "$1" in
+  start)
+    [[ $# -lt 3 ]] && usage
+    shift; cmd_start "$@"
+    ;;
+  stop)   cmd_stop ;;
+  status) cmd_status ;;
+  log)    shift; cmd_log "$@" ;;
+  *)      usage ;;
+esac

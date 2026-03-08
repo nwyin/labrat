@@ -2,16 +2,19 @@
 
 Autonomous ML research agent skill. Designs experiments, deploys to Modal GPUs, tracks results, and iterates — all within a compute budget.
 
+Also includes **treadmill** — a portable recurring-command skill for agent harnesses that don't have a built-in loop.
+
 Built on the [Agent Skills](https://agentskills.io) open standard. Works with Claude Code, Codex, OpenCode, Cursor, Gemini CLI, and any other compatible tool.
 
 ## Install
 
 ### Claude Code
 
-Copy the skill directory to your personal skills folder:
+Copy the skill directories to your personal skills folder:
 
 ```bash
 cp -r labrat/ ~/.claude/skills/labrat
+cp -r treadmill/ ~/.claude/skills/treadmill
 ```
 
 Or install as a plugin from GitHub:
@@ -90,11 +93,14 @@ Experiments run on Modal GPUs (defaults to T4, the cheapest option). Each experi
 ## Structure
 
 ```
-labrat/
-  SKILL.md                      # Agent instructions
-  scripts/research-status       # CLI status checker
-  references/modal-patterns.md  # Modal deployment patterns
-AGENTS.md                       # Codex/fallback instructions
+labrat/                           # ML research skill
+  SKILL.md                        # Agent instructions
+  scripts/research-status         # CLI status checker
+  references/modal-patterns.md    # Modal deployment patterns
+treadmill/                        # Recurring command skill
+  SKILL.md                        # Agent instructions
+  scripts/treadmill               # Background loop manager
+AGENTS.md                         # Codex/fallback instructions
 README.md
 LICENSE
 ```
