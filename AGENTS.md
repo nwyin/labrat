@@ -6,11 +6,12 @@ This repository contains a skill for AI coding agents. See `labrat/SKILL.md` for
 
 Labrat turns your AI agent into an autonomous ML researcher. Given a research goal and compute budget, it:
 
-1. Creates a structured `.research/` directory with state tracking
-2. Designs and runs a baseline experiment on Modal GPUs
-3. Iterates with controlled ablations (one variable at a time)
-4. Tracks spending against your budget
-5. Writes a final summary with results table and conclusions
+1. Starts with a short interview to clarify goals, metrics, and constraints
+2. Creates a structured `.research/` directory with state tracking
+3. Designs and runs a baseline experiment on Modal GPUs
+4. Iterates with controlled ablations (one variable at a time)
+5. Tracks spending against your budget
+6. Writes a final summary with results table and conclusions
 
 ## Prerequisites
 
@@ -24,7 +25,7 @@ Tell your agent:
 
 > Run a labrat session: test whether label smoothing improves MNIST accuracy. Budget: $5.
 
-The agent will initialize `.research/`, write experiment code, deploy to Modal, collect results, and iterate.
+The agent will first ask a few clarifying questions and write a scoped brief in `.research/scope.md`, then initialize `.research/`, write experiment code, deploy to Modal, collect results, and iterate.
 
 ## Key files
 

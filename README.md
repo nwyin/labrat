@@ -1,6 +1,6 @@
 # labrat
 
-Autonomous ML research agent skill. Designs experiments, deploys to Modal GPUs, tracks results, and iterates — all within a compute budget.
+Autonomous ML research agent skill. Interviews the user, scopes an ML project into a tractable plan, then designs experiments, deploys to Modal GPUs, tracks results, and iterates within a compute budget.
 
 Also includes **treadmill** — a portable recurring-command skill for agent harnesses that don't have a built-in loop.
 
@@ -66,6 +66,8 @@ Start a new research session:
 
 > Run a labrat session: test whether dropout rate affects convergence on CIFAR-10. Budget: $10.
 
+For a new session, the agent first asks a few clarifying questions and writes a scoped project brief in `.research/scope.md` before writing code.
+
 Continue an existing session (if `.research/state.json` exists):
 
 > Continue the research session.
@@ -78,11 +80,12 @@ python labrat/scripts/research-status
 
 ## How it works
 
-1. **Initialize** — Creates `.research/` with `state.json`, `plan.md`, `log.md`
-2. **Baseline** — Always runs a baseline experiment first
-3. **Iterate** — Each experiment changes one variable from baseline
-4. **Track** — Logs results, tracks spend against budget
-5. **Conclude** — Writes `summary.md` with results table and findings
+1. **Interview** — Clarifies goals, metrics, constraints, and writes a scoped project brief
+2. **Initialize** — Creates `.research/` with `state.json`, `scope.md`, `plan.md`, `log.md`
+3. **Baseline** — Always runs a baseline experiment first
+4. **Iterate** — Each experiment changes one variable from baseline
+5. **Track** — Logs results, tracks spend against budget
+6. **Conclude** — Writes `summary.md` with results table and findings
 
 Experiments run on Modal GPUs (defaults to T4, the cheapest option). Each experiment produces:
 - `config.json` — hyperparameters
