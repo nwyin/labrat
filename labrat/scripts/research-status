@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Quick status check for an active research session."""
+
+import json
+import sys
+from pathlib import Path
+
+
+def main():
+    state_path = Path(".research/state.json")
+    if not state_path.exists():
+        print("No active research session in this directory.")
+        sys.exit(0)
+
+    state = json.loads(state_path.read_text())
+
+    status = state["status"]
+    goal = state.get("research_goal", "—")
+    budget = state.get("budget_usd", 0)
+    spent = state.get("spent_usd", 0)
+    iteration = state.get("iteration", 0)
+    experiments = state.get("experiments", [])
+    findings = state.get("findings", [])
+    next_steps = state.get("next_steps", [])
+    blocked_on = state.get("blocked_on")
+    started = state.get("started_at", "—")
+    updated = state.get("updated_at", "—")
+
+    pct = (spent / budget * 100) if budget > 0 else 0
+
+    print(f"Research: {goal[:80]}")
+    print(f"Status:   {status}")
+    print(f"Budget:   ${spent:.2f} / ${budget:.2f} ({pct:.0f}%)")
+    print(f"Iter:     {iteration}")
+    print(f"Started:  {started}")
+    print(f"Updated:  {updated}")
+    print()
+
+    if experiments:
+        print("Experiments:")
+        for exp in experiments:
+            name = exp.get("name", "?")
+            exp_status = exp.get("status", "?")
+            finding = exp.get("finding", "—")
+            marker = {"completed": "+", "failed": "x", "running": "~"}.get(exp_status, " ")
+            print(f"  [{marker}] {name}: {exp_status} — {finding}")
+        print()
+
+    if findings:
+        print("Findings:")
+        for f in findings:
+            print(f"  - {f}")
+        print()
+
+    if blocked_on:
+        print(f"BLOCKED: {blocked_on}")
+        print()
+
+    if next_steps:
+        print("Next steps:")
+        for step in next_steps[:3]:
+            print(f"  - {step}")
+
+    # Check if summary exists
+    summary_path = Path(".research/summary.md")
+    if summary_path.exists():
+        print(f"\nSummary written: {summary_path}")
+
+
+if __name__ == "__main__":
+    main()
