@@ -21,7 +21,7 @@ Two modes:
 
 Check which mode by reading `.research/state.json`. If it doesn't exist, ask the user for their goal and budget (if not already provided), then begin the interview/scoping flow below.
 
-For overnight/recurring use: set up a recurring invocation (e.g. `/loop 5m /labrat` in Claude Code) and the skill keeps working autonomously, reading state each cycle.
+For overnight/recurring use: set up a recurring invocation (e.g. `/loop 5m /labrat` in Claude Code) and the skill keeps working autonomously, reading state each cycle. When using `treadmill`, run an idempotent state-advance worker, not a passive status script.
 
 ## Fresh-start interview and scope doc
 
@@ -98,6 +98,19 @@ When starting fresh:
 }
 ```
 
+Optional fields worth tracking when you launch remote jobs:
+
+```json
+{
+  "current_experiment": {
+    "name": "00-baseline",
+    "dir": ".research/experiments/00-baseline",
+    "status": "running",
+    "modal_app_id": "ap-1234567890"
+  }
+}
+```
+
 **Status values:**
 - `initializing` — setting up
 - `running` — actively working (writing code, analyzing, etc.)
@@ -159,6 +172,12 @@ Every invocation follows this protocol:
 - If done: collect results, update experiment status, set main status back to `running`
 - If still running: update `updated_at`, return early — don't block
 
+When using `treadmill`, the recurring command should be a state-transition worker such as `research-advance`, not a pure observer. The worker must:
+- reconcile `.research/state.json` with `results.json` and any tracked `modal_app_id`
+- move `waiting -> running` when results are harvested
+- mark `blocked` if the remote app stopped and no result artifact exists
+- append to `.research/log.md` when state transitions happen
+
 **`budget_exhausted`** / **`concluding`** — Write `.research/summary.md`, set status to `done`.
 
 ## Research discipline
@@ -187,6 +206,12 @@ Minimum contents:
 For Modal app patterns, checkpointing, validation, and common failure patterns, see [references/modal-patterns.md](references/modal-patterns.md).
 
 Run with: `cd .research/experiments/NN-name && modal run modal_app.py`
+
+If you are running unattended, prefer one of these patterns:
+- keep a durable local waiter process alive and have it write `results.json` on completion
+- or run detached on Modal, record `modal_app_id` in state, and have the recurring worker poll Modal plus artifact presence
+
+Do not treat a local PID or a passive status script as the source of truth for completion.
 
 ## Budget tracking
 

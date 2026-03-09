@@ -72,21 +72,14 @@ Treadmill keeps its state in `.treadmill/` in the current directory:
 
 ## Pairing with labrat
 
-For overnight ML research, start a treadmill that re-runs the labrat check:
+For overnight ML research, start a treadmill that re-runs the labrat state-advance worker rather than a passive status printer:
 
 ```bash
-# Have the agent check in every 5 minutes
-treadmill start 5m python -c "
-import json, sys
-state = json.load(open('.research/state.json'))
-print(f'Status: {state[\"status\"]}')
-if state['status'] == 'waiting':
-    print('Job still running...')
-elif state['status'] == 'done':
-    print('Research complete.')
-    sys.exit(0)
-"
+# Reconcile state every 5 minutes
+treadmill start 5m python /path/to/labrat/scripts/research-advance
 ```
+
+Use `research-status` only for human-readable inspection. Use `research-advance` for automation, because it updates `.research/state.json` when artifacts appear.
 
 The agent can read treadmill logs to see what happened between invocations.
 

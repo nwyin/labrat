@@ -4,6 +4,7 @@ set -euo pipefail
 TREADMILL_DIR="${TREADMILL_DIR:-.treadmill}"
 PID_FILE="$TREADMILL_DIR/pid"
 LOG_FILE="$TREADMILL_DIR/log"
+RUNNER_FILE="$TREADMILL_DIR/runner.sh"
 
 usage() {
   cat <<'USAGE'
@@ -51,14 +52,34 @@ cmd_start() {
 
   echo "Starting treadmill: every ${interval_raw} (${interval}s), running: ${cmd[*]}"
 
-  (
-    while true; do
-      echo "--- $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$LOG_FILE"
-      "${cmd[@]}" >> "$LOG_FILE" 2>&1 || true
-      echo "" >> "$LOG_FILE"
-      sleep "$interval"
-    done
-  ) &
+  local workdir
+  local workdir_q
+  local log_q
+  local runner_q
+  local cmd_decl
+  workdir="$(pwd)"
+  workdir_q=$(printf '%q' "$workdir")
+  log_q=$(printf '%q' "$LOG_FILE")
+  runner_q=$(printf '%q' "$RUNNER_FILE")
+  cmd_decl="$(declare -p cmd)"
+
+  cat > "$RUNNER_FILE" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cd $workdir_q
+$cmd_decl
+LOG_FILE=$log_q
+while true; do
+  echo "--- \$(date '+%Y-%m-%d %H:%M:%S') ---" >> "\$LOG_FILE"
+  "\${cmd[@]}" >> "\$LOG_FILE" 2>&1 || true
+  echo "" >> "\$LOG_FILE"
+  sleep $interval
+done
+EOF
+
+  chmod +x "$RUNNER_FILE"
+
+  nohup bash "$RUNNER_FILE" >/dev/null 2>&1 &
 
   local pid=$!
   echo "$pid" > "$PID_FILE"
@@ -66,6 +87,7 @@ cmd_start() {
   cat > "$TREADMILL_DIR/config" <<CFG
 interval=$interval_raw
 command=${cmd[*]}
+workdir=$workdir
 started=$(date '+%Y-%m-%d %H:%M:%S')
 pid=$pid
 CFG
@@ -93,6 +115,7 @@ cmd_stop() {
   fi
 
   rm -f "$PID_FILE"
+  rm -f "$RUNNER_FILE"
 }
 
 cmd_status() {

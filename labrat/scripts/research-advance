@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Advance a labrat research session by reconciling state with artifacts."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+GPU_PRICES = {
+    "T4": 0.59,
+    "L4": 0.73,
+    "A10G": 1.10,
+    "A100 40GB": 3.81,
+    "A100 80GB": 4.50,
+    "H100": 6.72,
+}
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def find_current_experiment(state: dict) -> tuple[dict | None, dict | None]:
+    current = state.get("current_experiment")
+    experiments = state.get("experiments", [])
+
+    if isinstance(current, dict):
+        for exp in experiments:
+            if exp.get("dir") == current.get("dir") or exp.get("name") == current.get("name"):
+                return current, exp
+        return current, None
+
+    for exp in experiments:
+        if exp.get("status") in {"running", "deploying", "validating", "coding"}:
+            return exp, exp
+
+    return None, None
+
+
+def estimate_cost_usd(runtime_seconds: float | int | None, gpu_type: str | None) -> float | None:
+    if runtime_seconds is None or not gpu_type:
+        return None
+    hourly = GPU_PRICES.get(gpu_type)
+    if hourly is None:
+        return None
+    return float(runtime_seconds) * hourly / 3600.0
+
+
+def summarize_result(final_metrics: dict) -> str:
+    train_acc = final_metrics.get("train_accuracy")
+    test_acc = final_metrics.get("test_accuracy")
+
+    if train_acc is not None and test_acc is not None:
+        if train_acc >= 0.99 and test_acc < 0.2:
+            return f"Completed, but likely memorized rather than generalized (train={train_acc:.4f}, test={test_acc:.4f})."
+        return f"Completed with train={train_acc:.4f}, test={test_acc:.4f}."
+
+    return "Completed; inspect results.json for detailed metrics."
+
+
+def append_log(log_path: Path, experiment_name: str, finding: str, result: dict, cost_usd: float | None) -> None:
+    final = result.get("final_metrics", {})
+    runtime = result.get("runtime_seconds")
+    lines = [
+        "---",
+        utc_now(),
+        "",
+        f"- Auto-harvested completed results for `{experiment_name}`.",
+        f"- Finding: {finding}",
+    ]
+    if runtime is not None:
+        lines.append(f"- Runtime seconds: {runtime:.1f}")
+    if cost_usd is not None:
+        lines.append(f"- Estimated cost USD: {cost_usd:.4f}")
+    if final:
+        lines.append(f"- Final metrics: {json.dumps(final, sort_keys=True)}")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def query_modal_app_state(app_id: str) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["modal", "app", "list", "--json"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+
+    try:
+        apps = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    for app in apps:
+        if app.get("App ID") == app_id:
+            return app.get("State")
+    return None
+
+
+def main() -> int:
+    state_path = Path(".research/state.json")
+    log_path = Path(".research/log.md")
+
+    if not state_path.exists():
+        print("No active research session in this directory.")
+        return 0
+
+    state = load_json(state_path)
+    status = state.get("status")
+
+    if status != "waiting":
+        print(f"No advance needed. state.status={status}")
+        return 0
+
+    current, experiment_entry = find_current_experiment(state)
+    if current is None:
+        print("State is waiting, but no current experiment is recorded.")
+        return 0
+
+    exp_dir = Path(current["dir"])
+    results_path = exp_dir / "results.json"
+    now = utc_now()
+
+    if results_path.exists():
+        result = load_json(results_path)
+        final = result.get("final_metrics", result)
+        gpu_type = (
+            result.get("modal", {}).get("gpu")
+            or result.get("config", {}).get("gpu_type")
+            or current.get("gpu_type")
+        )
+        runtime_seconds = result.get("runtime_seconds")
+        cost_usd = estimate_cost_usd(runtime_seconds, gpu_type)
+        finding = summarize_result(final)
+
+        target = experiment_entry or current
+        target["status"] = "completed"
+        target["result"] = final
+        target["finding"] = finding
+        if runtime_seconds is not None:
+            target["gpu_seconds"] = round(float(runtime_seconds), 1)
+        if cost_usd is not None:
+            target["spent_usd"] = round(cost_usd, 4)
+            state["spent_usd"] = round(float(state.get("spent_usd", 0.0)) + cost_usd, 4)
+
+        findings = state.setdefault("findings", [])
+        if finding not in findings:
+            findings.append(finding)
+
+        state["status"] = "running"
+        state["current_experiment"] = None
+        state["blocked_on"] = None
+        state["updated_at"] = now
+
+        next_steps = state.setdefault("next_steps", [])
+        if not next_steps:
+            next_steps.append("Analyze the completed result and choose the next experiment.")
+
+        write_json(state_path, state)
+        append_log(log_path, current.get("name", "?"), finding, result, cost_usd)
+
+        print(f"HARVESTED {current.get('name', '?')}")
+        print(f"finding={finding}")
+        return 0
+
+    modal_app_id = current.get("modal_app_id") or (experiment_entry or {}).get("modal_app_id")
+    if modal_app_id:
+        modal_state = query_modal_app_state(modal_app_id)
+        if modal_state:
+            state["updated_at"] = now
+            write_json(state_path, state)
+            print(f"modal_app_id={modal_app_id}")
+            print(f"modal_state={modal_state}")
+            if "stopped" in modal_state.lower():
+                state["status"] = "blocked"
+                state["blocked_on"] = f"Modal app {modal_app_id} stopped without a local results.json artifact."
+                write_json(state_path, state)
+                print(f"BLOCKED: {state['blocked_on']}")
+            return 0
+
+    state["updated_at"] = now
+    write_json(state_path, state)
+    print("WAITING: no results yet")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

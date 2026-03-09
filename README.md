@@ -78,13 +78,19 @@ Check status without an agent:
 python labrat/scripts/research-status
 ```
 
+Advance state without an agent:
+
+```bash
+python labrat/scripts/research-advance
+```
+
 ## How it works
 
 1. **Interview** — Clarifies goals, metrics, constraints, and writes a scoped project brief
 2. **Initialize** — Creates `.research/` with `state.json`, `scope.md`, `plan.md`, `log.md`
 3. **Baseline** — Always runs a baseline experiment first
 4. **Iterate** — Each experiment changes one variable from baseline
-5. **Track** — Logs results, tracks spend against budget
+5. **Track** — Logs results, tracks spend against budget, and reconciles finished artifacts back into state
 6. **Conclude** — Writes `summary.md` with results table and findings
 
 Experiments run on Modal GPUs (defaults to T4, the cheapest option). Each experiment produces:
@@ -98,6 +104,7 @@ Experiments run on Modal GPUs (defaults to T4, the cheapest option). Each experi
 ```
 labrat/                           # ML research skill
   SKILL.md                        # Agent instructions
+  scripts/research-advance        # State reconciliation worker
   scripts/research-status         # CLI status checker
   references/modal-patterns.md    # Modal deployment patterns
 treadmill/                        # Recurring command skill
