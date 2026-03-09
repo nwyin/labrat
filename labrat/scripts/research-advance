@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -91,7 +92,157 @@ def append_log(log_path: Path, experiment_name: str, finding: str, result: dict,
         f.write("\n".join(lines) + "\n")
 
 
-def query_modal_app_state(app_id: str) -> str | None:
+def append_state_note(log_path: Path, experiment_name: str, note: str) -> None:
+    lines = [
+        "---",
+        utc_now(),
+        "",
+        f"- State transition for `{experiment_name}`.",
+        f"- Note: {note}",
+    ]
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def ensure_next_step(state: dict, note: str) -> None:
+    next_steps = state.setdefault("next_steps", [])
+    if note not in next_steps:
+        next_steps.insert(0, note)
+
+
+def get_nested(mapping: dict | None, *keys: str) -> str | None:
+    value = mapping
+    for key in keys:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value if isinstance(value, str) else None
+
+
+def infer_remote_results_location(state: dict, current: dict, experiment_entry: dict | None) -> tuple[str | None, str | None]:
+    candidates = [current, experiment_entry, state.get("artifact_store")]
+
+    volume_name = None
+    for candidate in candidates:
+        volume_name = (
+            get_nested(candidate, "modal_volume_name")
+            or get_nested(candidate, "volume_name")
+            or get_nested(candidate, "modal_volume", "name")
+            or get_nested(candidate, "artifact_store", "volume_name")
+        )
+        if volume_name:
+            break
+
+    remote_results_path = None
+    for candidate in [current, experiment_entry]:
+        if not isinstance(candidate, dict):
+            continue
+        remote_results_path = (
+            get_nested(candidate, "remote_results_path")
+            or get_nested(candidate, "artifacts", "results_path")
+        )
+        if remote_results_path:
+            return volume_name, remote_results_path
+
+        remote_dir = (
+            get_nested(candidate, "remote_dir")
+            or get_nested(candidate, "artifacts", "remote_dir")
+        )
+        if remote_dir:
+            return volume_name, f"{remote_dir.rstrip('/')}/results.json"
+
+    base_path = get_nested(state.get("artifact_store"), "base_path")
+    exp_name = current.get("name") or (experiment_entry or {}).get("name")
+    if volume_name and base_path and exp_name:
+        return volume_name, f"{base_path.rstrip('/')}/{exp_name}/results.json"
+
+    return volume_name, None
+
+
+def fetch_remote_results(volume_name: str, remote_results_path: str) -> dict | None:
+    try:
+        with tempfile.TemporaryDirectory(prefix="labrat-results-") as tmpdir:
+            local_path = Path(tmpdir) / "results.json"
+            proc = subprocess.run(
+                [
+                    "modal",
+                    "volume",
+                    "get",
+                    volume_name,
+                    remote_results_path,
+                    str(local_path),
+                    "--force",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            if proc.stdout:
+                print(proc.stdout, end="")
+            return load_json(local_path)
+    except Exception:
+        return None
+
+
+def harvest_result(
+    state: dict,
+    state_path: Path,
+    log_path: Path,
+    now: str,
+    current: dict,
+    experiment_entry: dict | None,
+    result: dict,
+) -> None:
+    final = result.get("final_metrics", result)
+    gpu_type = (
+        result.get("modal", {}).get("gpu")
+        or result.get("config", {}).get("gpu_type")
+        or current.get("gpu_type")
+    )
+    runtime_seconds = result.get("runtime_seconds")
+    cost_usd = estimate_cost_usd(runtime_seconds, gpu_type)
+    finding = summarize_result(final)
+
+    target = experiment_entry or current
+    target["status"] = "completed"
+    target["result"] = final
+    target["finding"] = finding
+    if target is not current:
+        current["status"] = "completed"
+        current["result"] = final
+        current["finding"] = finding
+    if runtime_seconds is not None:
+        target["gpu_seconds"] = round(float(runtime_seconds), 1)
+        if target is not current:
+            current["gpu_seconds"] = target["gpu_seconds"]
+    if cost_usd is not None:
+        target["spent_usd"] = round(cost_usd, 4)
+        if target is not current:
+            current["spent_usd"] = target["spent_usd"]
+        state["spent_usd"] = round(float(state.get("spent_usd", 0.0)) + cost_usd, 4)
+
+    findings = state.setdefault("findings", [])
+    if finding not in findings:
+        findings.append(finding)
+
+    state["status"] = "running"
+    state["current_experiment"] = None
+    state["blocked_on"] = None
+    state["updated_at"] = now
+
+    next_steps = state.setdefault("next_steps", [])
+    if not next_steps:
+        next_steps.append("Analyze the completed result and choose the next experiment.")
+
+    write_json(state_path, state)
+    append_log(log_path, current.get("name", "?"), finding, result, cost_usd)
+
+    print(f"HARVESTED {current.get('name', '?')}")
+    print(f"finding={finding}")
+
+
+def query_modal_app_state(app_id: str) -> tuple[bool, str | None]:
     try:
         proc = subprocess.run(
             ["modal", "app", "list", "--json"],
@@ -100,17 +251,17 @@ def query_modal_app_state(app_id: str) -> str | None:
             text=True,
         )
     except Exception:
-        return None
+        return False, None
 
     try:
         apps = json.loads(proc.stdout)
     except json.JSONDecodeError:
-        return None
+        return False, None
 
     for app in apps:
         if app.get("App ID") == app_id:
-            return app.get("State")
-    return None
+            return True, app.get("State")
+    return True, None
 
 
 def main() -> int:
@@ -137,61 +288,71 @@ def main() -> int:
     results_path = exp_dir / "results.json"
     now = utc_now()
 
+    volume_name, remote_results_path = infer_remote_results_location(state, current, experiment_entry)
+    if volume_name and remote_results_path:
+        remote_result = fetch_remote_results(volume_name, remote_results_path)
+        if remote_result is not None:
+            results_path.parent.mkdir(parents=True, exist_ok=True)
+            write_json(results_path, remote_result)
+            print(f"remote_volume={volume_name}")
+            print(f"remote_results_path={remote_results_path}")
+            harvest_result(state, state_path, log_path, now, current, experiment_entry, remote_result)
+            return 0
+
     if results_path.exists():
-        result = load_json(results_path)
-        final = result.get("final_metrics", result)
-        gpu_type = (
-            result.get("modal", {}).get("gpu")
-            or result.get("config", {}).get("gpu_type")
-            or current.get("gpu_type")
-        )
-        runtime_seconds = result.get("runtime_seconds")
-        cost_usd = estimate_cost_usd(runtime_seconds, gpu_type)
-        finding = summarize_result(final)
-
-        target = experiment_entry or current
-        target["status"] = "completed"
-        target["result"] = final
-        target["finding"] = finding
-        if runtime_seconds is not None:
-            target["gpu_seconds"] = round(float(runtime_seconds), 1)
-        if cost_usd is not None:
-            target["spent_usd"] = round(cost_usd, 4)
-            state["spent_usd"] = round(float(state.get("spent_usd", 0.0)) + cost_usd, 4)
-
-        findings = state.setdefault("findings", [])
-        if finding not in findings:
-            findings.append(finding)
-
-        state["status"] = "running"
-        state["current_experiment"] = None
-        state["blocked_on"] = None
-        state["updated_at"] = now
-
-        next_steps = state.setdefault("next_steps", [])
-        if not next_steps:
-            next_steps.append("Analyze the completed result and choose the next experiment.")
-
-        write_json(state_path, state)
-        append_log(log_path, current.get("name", "?"), finding, result, cost_usd)
-
-        print(f"HARVESTED {current.get('name', '?')}")
-        print(f"finding={finding}")
+        harvest_result(state, state_path, log_path, now, current, experiment_entry, load_json(results_path))
         return 0
 
     modal_app_id = current.get("modal_app_id") or (experiment_entry or {}).get("modal_app_id")
     if modal_app_id:
-        modal_state = query_modal_app_state(modal_app_id)
-        if modal_state:
+        query_ok, modal_state = query_modal_app_state(modal_app_id)
+        if query_ok:
             state["updated_at"] = now
-            write_json(state_path, state)
             print(f"modal_app_id={modal_app_id}")
-            print(f"modal_state={modal_state}")
-            if "stopped" in modal_state.lower():
-                state["status"] = "blocked"
-                state["blocked_on"] = f"Modal app {modal_app_id} stopped without a local results.json artifact."
+            print(f"modal_state={modal_state or 'missing'}")
+
+            target = experiment_entry or current
+            investigation_note = (
+                f"Inspect Modal app {modal_app_id}; the remote run no longer has a harvestable "
+                f"results artifact for `{current.get('name', '?')}`."
+            )
+
+            if modal_state is None:
+                target["status"] = "failed"
+                target["finding"] = "Remote run disappeared from `modal app list` before results were harvested."
+                current["status"] = "failed"
+                current["finding"] = target["finding"]
+                state["status"] = "running"
+                state["blocked_on"] = None
+                ensure_next_step(state, investigation_note)
                 write_json(state_path, state)
-                print(f"BLOCKED: {state['blocked_on']}")
+                append_state_note(
+                    log_path,
+                    current.get("name", "?"),
+                    f"Modal app {modal_app_id} is no longer visible in `modal app list`, and no local results.json exists.",
+                )
+                print(f"RECOVER: {investigation_note}")
+                return 0
+
+            modal_state_lc = modal_state.lower()
+            if any(token in modal_state_lc for token in {"stopped", "failed", "completed"}):
+                target["status"] = "failed"
+                target["finding"] = f"Remote run ended in Modal state `{modal_state}` without a local results artifact."
+                current["status"] = "failed"
+                current["finding"] = target["finding"]
+                state["status"] = "running"
+                state["blocked_on"] = None
+                ensure_next_step(state, investigation_note)
+                write_json(state_path, state)
+                append_state_note(
+                    log_path,
+                    current.get("name", "?"),
+                    f"Modal app {modal_app_id} reached terminal state `{modal_state}` without a local results.json artifact.",
+                )
+                print(f"RECOVER: {investigation_note}")
+                return 0
+
+            write_json(state_path, state)
             return 0
 
     state["updated_at"] = now

@@ -96,10 +96,10 @@ python labrat/scripts/research-supervise
 2. **Initialize** — Creates `.research/` with `state.json`, `scope.md`, `plan.md`, `log.md`
 3. **Baseline** — Always runs a baseline experiment first
 4. **Iterate** — Each experiment changes one variable from baseline
-5. **Track** — Logs results, tracks spend against budget, and reconciles finished artifacts back into state
+5. **Track** — Logs results, tracks spend against budget, and reconciles finished volume-backed artifacts back into state
 6. **Conclude** — Writes `summary.md` with results table and findings
 
-`research-advance` only reconciles state. `research-supervise` adds the next handoff for Codex by invoking `codex exec` when the session is actionable again, which is the closest equivalent to Claude Code's recurring `/loop`.
+`research-advance` now prefers remote `results.json` artifacts on a Modal Volume and only falls back to app-state inspection for recovery. `research-supervise` adds the next handoff for Codex by invoking `codex exec` when the session is actionable again, which is the closest equivalent to Claude Code's recurring `/loop`.
 
 Experiments run on Modal GPUs (defaults to T4, the cheapest option). Each experiment produces:
 - `config.json` — hyperparameters
