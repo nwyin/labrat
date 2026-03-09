@@ -81,6 +81,15 @@ treadmill start 5m python /path/to/labrat/scripts/research-advance
 
 Use `research-status` only for human-readable inspection. Use `research-advance` for automation, because it updates `.research/state.json` when artifacts appear.
 
+If the harness is Codex, prefer the supervisor wrapper instead:
+
+```bash
+# Reconcile state, then wake Codex when the session is actionable
+treadmill start 5m python /path/to/labrat/scripts/research-supervise
+```
+
+That wrapper gives you the missing `/loop` behavior: the background loop notices finished artifacts, updates `.research/state.json`, and only then starts a fresh non-interactive Codex run to do the next research step.
+
 The agent can read treadmill logs to see what happened between invocations.
 
 ## When to use this vs built-in loop

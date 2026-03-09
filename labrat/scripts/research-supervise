@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Supervise a labrat research session by reconciling state and waking Codex."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+ACTIONABLE_STATUSES = {"initializing", "running", "concluding", "budget_exhausted"}
+DEFAULT_PROMPT = (
+    "Continue the labrat research session in this repository. "
+    "Read .research/state.json, .research/plan.md, and .research/log.md, then advance the "
+    "session by one meaningful step using the labrat skill instructions in the repo. "
+    "If the session is waiting on a remote run with no new artifact, exit quickly. "
+    "If an experiment completed, analyze it, update state, and continue to the next iteration."
+)
+
+
+def load_state(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+class PidLock:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.acquired = False
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(str(os.getpid()))
+                self.acquired = True
+                return True
+            except FileExistsError:
+                try:
+                    pid = int(self.path.read_text(encoding="utf-8").strip())
+                except Exception:
+                    self.path.unlink(missing_ok=True)
+                    continue
+                if pid_alive(pid):
+                    return False
+                self.path.unlink(missing_ok=True)
+
+    def release(self) -> None:
+        if self.acquired:
+            self.path.unlink(missing_ok=True)
+            self.acquired = False
+
+
+def run_research_advance(root: Path) -> int:
+    script = root / "labrat" / "scripts" / "research-advance"
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
+    return proc.returncode
+
+
+def should_invoke_codex(before: dict | None, after: dict | None) -> tuple[bool, str]:
+    if after is None:
+        return False, "no-state"
+
+    after_status = after.get("status")
+    before_status = (before or {}).get("status")
+
+    if after_status not in ACTIONABLE_STATUSES:
+        return False, f"status={after_status}"
+
+    if before_status != after_status:
+        return True, f"transition:{before_status}->{after_status}"
+
+    current = after.get("current_experiment")
+    if isinstance(current, dict) and current.get("status") in {"completed", "failed"}:
+        return True, f"current_experiment={current.get('status')}"
+
+    return True, f"status={after_status}"
+
+
+def run_codex(root: Path, prompt: str, automation_dir: Path) -> int:
+    automation_dir.mkdir(parents=True, exist_ok=True)
+    last_message = automation_dir / "last-agent-message.txt"
+    proc = subprocess.run(
+        [
+            "codex",
+            "exec",
+            "--full-auto",
+            "-C",
+            str(root),
+            "-o",
+            str(last_message),
+            prompt,
+        ],
+        cwd=root,
+        text=True,
+    )
+    return proc.returncode
+
+
+def main() -> int:
+    root = Path.cwd()
+    research_dir = root / ".research"
+    state_path = research_dir / "state.json"
+    automation_dir = research_dir / "automation"
+    lock = PidLock(automation_dir / "supervisor.lock")
+
+    if not lock.acquire():
+        print("SKIP: supervisor already running")
+        return 0
+
+    try:
+        before = load_state(state_path)
+        advance_rc = run_research_advance(root)
+        after = load_state(state_path)
+
+        should_run, reason = should_invoke_codex(before, after)
+        print(f"supervisor_reason={reason}")
+
+        if advance_rc != 0:
+            print(f"research_advance_rc={advance_rc}")
+            return advance_rc
+
+        if not should_run:
+            print("SKIP: no Codex wake-up needed")
+            return 0
+
+        prompt = os.environ.get("LABRAT_SUPERVISE_PROMPT", DEFAULT_PROMPT)
+        codex_rc = run_codex(root, prompt, automation_dir)
+        print(f"codex_rc={codex_rc}")
+        return codex_rc
+    finally:
+        lock.release()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

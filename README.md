@@ -84,6 +84,12 @@ Advance state without an agent:
 python labrat/scripts/research-advance
 ```
 
+For Codex-style unattended progress, run the supervisor instead:
+
+```bash
+python labrat/scripts/research-supervise
+```
+
 ## How it works
 
 1. **Interview** — Clarifies goals, metrics, constraints, and writes a scoped project brief
@@ -92,6 +98,8 @@ python labrat/scripts/research-advance
 4. **Iterate** — Each experiment changes one variable from baseline
 5. **Track** — Logs results, tracks spend against budget, and reconciles finished artifacts back into state
 6. **Conclude** — Writes `summary.md` with results table and findings
+
+`research-advance` only reconciles state. `research-supervise` adds the next handoff for Codex by invoking `codex exec` when the session is actionable again, which is the closest equivalent to Claude Code's recurring `/loop`.
 
 Experiments run on Modal GPUs (defaults to T4, the cheapest option). Each experiment produces:
 - `config.json` — hyperparameters
@@ -105,6 +113,7 @@ Experiments run on Modal GPUs (defaults to T4, the cheapest option). Each experi
 labrat/                           # ML research skill
   SKILL.md                        # Agent instructions
   scripts/research-advance        # State reconciliation worker
+  scripts/research-supervise      # Reconcile state, then wake Codex if needed
   scripts/research-status         # CLI status checker
   references/modal-patterns.md    # Modal deployment patterns
 treadmill/                        # Recurring command skill
