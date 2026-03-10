@@ -4,7 +4,7 @@ Autonomous ML research agent skill. Interviews the user, scopes an ML project in
 
 Also includes **treadmill** — a portable recurring-command skill for agent harnesses that don't have a built-in loop.
 
-Built on the [Agent Skills](https://agentskills.io) open standard. Works with Claude Code, Codex, OpenCode, Cursor, Gemini CLI, and any other compatible tool.
+Built on the [Agent Skills](https://agentskills.io) open standard. **Practically, this skill only works well with Claude Code** — it relies heavily on interactive tool use (subagent spawning, user interviews, recurring loops) that other harnesses like Codex, OpenCode, and Cursor don't yet support. Install instructions for other tools are included for forward-compatibility, but expect a degraded experience.
 
 ## Install
 

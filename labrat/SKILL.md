@@ -5,7 +5,7 @@ license: Apache-2.0
 compatibility: "Requires Python 3.12+, Modal CLI, and a Modal account with GPU access."
 metadata:
   author: tau
-  version: "1.2"
+  version: "1.3"
 ---
 
 # Autonomous ML Research
@@ -21,7 +21,7 @@ Two modes:
 
 Check which mode by reading `.research/state.json`. If it doesn't exist, ask the user for their goal and budget (if not already provided), then begin the interview/scoping flow below.
 
-For overnight/recurring use: set up a recurring invocation (e.g. `/loop 5m /labrat` in Claude Code) and the skill keeps working autonomously, reading state each cycle. When using `treadmill`, run an idempotent state-advance worker, not a passive status script.
+For overnight/recurring use: set up a recurring invocation (e.g. `/loop 5m /labrat` in Claude Code) and the skill keeps working autonomously, reading state each cycle. When using `treadmill`, run an idempotent state-advance worker or supervisor, not a passive status script.
 
 ## Fresh-start interview and scope doc
 
@@ -68,14 +68,16 @@ When starting fresh:
      state.json
      plan.md
      log.md
+     assets/
      experiments/
    ```
-2. Run the interview/scoping step and write the result to `.research/scope.md`
-3. Copy or write the scoped research plan to `.research/plan.md`
-4. Initialize `state.json` only after the scope is actionable (schema below)
-5. Initialize `log.md` with the research goal and date
-6. Git commit: `research: init <topic>`
-7. Start the first experiment (always a baseline)
+2. Ensure the project is in a git repository. If not, initialize one before continuing so all checkpoints are auditable.
+3. Run the interview/scoping step and write the result to `.research/scope.md`
+4. Copy or write the scoped research plan to `.research/plan.md`
+5. Initialize `state.json` only after the scope is actionable (schema below)
+6. Initialize `log.md` with the research goal and date
+7. Git commit: `research: init <topic>`
+8. Start the first experiment (always a baseline)
 
 ## State file: `.research/state.json`
 
@@ -102,11 +104,18 @@ Optional fields worth tracking when you launch remote jobs:
 
 ```json
 {
+  "artifact_store": {
+    "kind": "modal_volume",
+    "volume_name": "research-vol",
+    "base_path": "/labrat/<session-slug>"
+  },
   "current_experiment": {
     "name": "00-baseline",
     "dir": ".research/experiments/00-baseline",
     "status": "running",
-    "modal_app_id": "ap-1234567890"
+    "modal_app_id": "ap-1234567890",
+    "remote_dir": "/labrat/<session-slug>/00-baseline",
+    "remote_results_path": "/labrat/<session-slug>/00-baseline/results.json"
   }
 }
 ```
@@ -116,7 +125,7 @@ Optional fields worth tracking when you launch remote jobs:
 - `running` — actively working (writing code, analyzing, etc.)
 - `waiting` — Modal job in flight, checking each cycle
 - `blocked` — needs human input (set `blocked_on` to explain why)
-- `concluding` — writing final summary
+- `concluding` — writing final report
 - `done` — complete, no more work to do
 - `budget_exhausted` — out of money, will conclude
 
@@ -154,7 +163,8 @@ Every invocation follows this protocol:
 9. Take the next action based on status (see below)
 10. Update state.json
 11. Append to log.md
-12. Git commit if meaningful work was done
+12. Write or refresh any user-facing artifacts affected by the work
+13. Git commit if meaningful work was done
 ```
 
 ### Action by status
@@ -173,12 +183,20 @@ Every invocation follows this protocol:
 - If still running: update `updated_at`, return early — don't block
 
 When using `treadmill`, the recurring command should be a state-transition worker such as `research-advance`, not a pure observer. The worker must:
-- reconcile `.research/state.json` with `results.json` and any tracked `modal_app_id`
+- reconcile `.research/state.json` with remote volume artifacts first, then local `results.json`, and finally any tracked `modal_app_id`
 - move `waiting -> running` when results are harvested
 - mark `blocked` if the remote app stopped and no result artifact exists
 - append to `.research/log.md` when state transitions happen
 
-**`budget_exhausted`** / **`concluding`** — Write `.research/summary.md`, set status to `done`.
+For Codex specifically, prefer the bundled supervisor:
+
+```bash
+python labrat/scripts/research-supervise
+```
+
+`research-supervise` runs `research-advance` first, then invokes `codex exec` when the session is actionable again. This gives Codex a `/loop`-like handoff: remote completion gets reconciled into state, then a fresh Codex worker picks up the next iteration.
+
+**`budget_exhausted`** / **`concluding`** — Write `.research/report.html`, set status to `done`.
 
 ## Research discipline
 
@@ -201,15 +219,35 @@ Minimum contents:
 - `train.py` — training/eval script
 - `modal_app.py` — Modal deployment wrapper
 - `config.json` — hyperparameters
-- `results.json` — filled after run completes
+- `results.json` — local cache of the final result after harvest completes
 
 For Modal app patterns, checkpointing, validation, and common failure patterns, see [references/modal-patterns.md](references/modal-patterns.md).
 
 Run with: `cd .research/experiments/NN-name && modal run modal_app.py`
 
-If you are running unattended, prefer one of these patterns:
-- keep a durable local waiter process alive and have it write `results.json` on completion
-- or run detached on Modal, record `modal_app_id` in state, and have the recurring worker poll Modal plus artifact presence
+By default, write remote artifacts to a shared Modal Volume in a stable per-session layout:
+
+```text
+/labrat/<session-slug>/
+  00-baseline/
+    results.json
+    metadata.json
+    checkpoints/
+  01-variant/
+    results.json
+    metadata.json
+    checkpoints/
+```
+
+Track the volume in `.research/state.json` under `artifact_store`, and track each experiment's `remote_dir` or `remote_results_path`. The recurring worker should treat the remote `results.json` as the source of truth, then write a local `.research/experiments/NN-name/results.json` cache after harvesting.
+
+If you are running unattended, prefer this pattern:
+- run detached on Modal
+- record `modal_app_id`, `remote_dir`, and `remote_results_path` in state
+- have the remote function write `results.json` and `metadata.json` into the Modal Volume before exit
+- have the recurring worker poll the volume artifact first and only fall back to app-state inspection for recovery
+
+Only use a durable local waiter process as a fallback when you cannot rely on a volume-backed artifact path.
 
 Do not treat a local PID or a passive status script as the source of truth for completion.
 
@@ -234,13 +272,26 @@ Prefer the cheapest GPU that gets the job done. Most small experiments work fine
 
 ## Git protocol
 
+Git is mandatory for auditability. Work inside a git repository and keep checkpoint commits throughout the session.
+
+If the directory is not already a git repo:
+- run `git init` before starting research artifacts
+- make the initialization commit once `.research/` scaffolding, scope, and plan exist
+
 Commit at meaningful boundaries (not every tiny edit):
 - `research: init <topic>` — after initialization
+- `research: scope <topic>` — after major scope revisions, if the project definition changed materially
 - `research: <NN-name> code` — after writing experiment code
 - `research: <NN-name> results — <one-line finding>` — after collecting results
-- `research: conclude — <verdict>` — after writing summary
+- `research: conclude — <verdict>` — after writing the final HTML report
 
-Stage only `.research/` files. Don't touch the rest of the repo.
+Do not go multiple major phases without a commit. At minimum there should be auditable snapshots for:
+- scoped project definition
+- each experiment's planned code
+- each experiment's collected result
+- the final report
+
+Stage only `.research/` files unless the user explicitly asked for broader repo changes.
 
 ## Logging
 
@@ -266,45 +317,145 @@ Also log the scoping step for new sessions. Capture the key answers, assumptions
 
 ## Concluding
 
-Write `.research/summary.md` when concluding. Structure:
+Write `.research/report.html` when concluding. This is the primary deliverable for the user, and it should be easy to skim quickly. Use semantic HTML with clear section headings and compact tables.
 
-```markdown
-# Research Summary: <topic>
+The report must include:
+- title and one-sentence verdict near the top
+- a short executive summary
+- the goal and scoped hypothesis
+- the approach in 2-3 sentences
+- a results table comparing every experiment to baseline
+- graphs and/or diagrams when they materially improve understanding
+- findings backed by data
+- caveats and confidence level
+- budget and compute usage
+- links or references to important local artifacts in `.research/`
+- a "How to Read the Code" section
+- a "How to Sanity-Check the Results" section
 
-## Goal
-<what was being investigated>
+Create report visuals as local files under `.research/assets/` and embed them into `report.html` with relative paths. Prefer simple static PNG or SVG artifacts that are easy to inspect in git diffs and in a browser.
 
-## Approach
-<methodology in 2-3 sentences>
+Useful visuals include:
+- metric-over-time plots for training or validation curves
+- bar charts for baseline vs variant comparisons
+- small workflow diagrams showing the execution path or experiment pipeline
+- confusion matrices or similar diagnostic plots when they clarify behavior
 
-## Results
+Do not add decorative charts. Every diagram or graph should answer a concrete review question. Label axes, units, seeds, and experiment names clearly enough that a reviewer can sanity-check the figure quickly.
 
-| # | Experiment | Change | Key Metric | vs Baseline |
-|---|-----------|--------|------------|-------------|
-| 0 | baseline | — | 92.3% | — |
-| 1 | label-smoothing | smoothing=0.1 | 93.1% | +0.8pp |
+The "How to Read the Code" section should help a reviewer skim quickly. Include:
+- which files matter most and why
+- the execution path from config to training to evaluation to result serialization
+- where the baseline/variant difference is implemented
+- where to look for likely mistakes first
 
-## Findings
-<numbered list, each backed by data>
+The "How to Sanity-Check the Results" section should help a reviewer audit quickly. Include:
+- the exact metric to inspect first
+- expected behavior if the hypothesis is true vs false
+- obvious failure modes or confounders
+- whether the result is strong, weak, noisy, or inconclusive
+- the minimum checks needed to decide whether the run is credible
 
-## Conclusion
-<one of: supported, weakly_supported, inconclusive, contradicted, failed_to_test>
+Suggested structure:
 
-<paragraph explaining the conclusion>
+```html
+<html>
+  <head>
+    <title>Research Report: <topic></title>
+  </head>
+  <body>
+    <h1>Research Report: <topic></h1>
 
-## Caveats
-<what limits confidence>
+    <section>
+      <h2>Executive Summary</h2>
+      <p>...</p>
+    </section>
 
-## Budget
-- Allocated: $X
-- Spent: $Y
-- GPU hours: Z
+    <section>
+      <h2>Goal</h2>
+      <p>...</p>
+    </section>
 
-## Artifacts
-<list of important files in .research/>
+    <section>
+      <h2>Approach</h2>
+      <p>...</p>
+    </section>
+
+    <section>
+      <h2>Results</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Experiment</th><th>Change</th><th>Key Metric</th><th>vs Baseline</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>0</td><td>baseline</td><td>—</td><td>92.3%</td><td>—</td>
+          </tr>
+          <tr>
+            <td>1</td><td>label-smoothing</td><td>smoothing=0.1</td><td>93.1%</td><td>+0.8pp</td>
+          </tr>
+        </tbody>
+      </table>
+      <figure>
+        <img src="assets/results-overview.png" alt="Overview chart comparing key experiment metrics">
+        <figcaption>...</figcaption>
+      </figure>
+    </section>
+
+    <section>
+      <h2>Findings</h2>
+      <ol>
+        <li>...</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>How to Read the Code</h2>
+      <ul>
+        <li>...</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>How to Sanity-Check the Results</h2>
+      <ul>
+        <li>...</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Conclusion</h2>
+      <p>supported | weakly_supported | inconclusive | contradicted | failed_to_test</p>
+      <p>...</p>
+    </section>
+
+    <section>
+      <h2>Caveats</h2>
+      <p>...</p>
+    </section>
+
+    <section>
+      <h2>Budget</h2>
+      <ul>
+        <li>Allocated: $X</li>
+        <li>Spent: $Y</li>
+        <li>GPU hours: Z</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Artifacts</h2>
+      <ul>
+        <li>...</li>
+      </ul>
+    </section>
+  </body>
+</html>
 ```
 
-After writing the summary, set `status: "done"` and commit: `research: conclude — <verdict>`
+After writing the HTML report, set `status: "done"` and commit: `research: conclude — <verdict>`
 
 ## Quick status check
 
