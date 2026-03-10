@@ -195,7 +195,6 @@ python labrat/scripts/research-supervise
 ```
 
 `research-supervise` runs `research-advance` first, then invokes `codex exec` when the session is actionable again. This gives Codex a `/loop`-like handoff: remote completion gets reconciled into state, then a fresh Codex worker picks up the next iteration.
-
 **`budget_exhausted`** / **`concluding`** — Write `.research/report.html`, set status to `done`.
 
 ## Research discipline
