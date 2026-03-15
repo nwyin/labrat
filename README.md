@@ -21,7 +21,7 @@ Or install as a plugin from GitHub:
 
 ```bash
 # In Claude Code
-/install-plugin gh:tnguyen21/labrat
+/install-plugin gh:nwyin/labrat
 ```
 
 Then invoke with `/labrat` or just describe a research goal.
